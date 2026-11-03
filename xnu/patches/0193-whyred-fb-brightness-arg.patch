@@ -1,0 +1,46 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 7ead5ff..2b8dd70 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -362,12 +362,29 @@ AppleCLCD::start(IOService *provider)
+ 	    kIODirectionInOut | kIOMemoryPhysicallyContiguous, page_size, 0x00000000fffff000ull);
+ 	fDsiBufPhys = fDsiBuf ? fDsiBuf->getPhysicalSegment(0, NULL, kIOMemoryMapperNone) : 0;
+ 	fBlLock = IOLockAlloc();
+-	fBlLevel = 0x133;                       /* panel init level (stock DT) */
++	/*
++	 * sweetbrightness=N sets the boot level in nits (1..SWEET_FB_MAX_NITS).
++	 * Default stays at the stock 200 nits. The ABL leaves the panel bright
++	 * until iOS takes over, so a low value here is what makes a long
++	 * diagnostic boot readable in a dark room.
++	 */
++	uint32_t bootNits = 200;
++	(void)PE_parse_boot_argn("sweetbrightness", &bootNits, sizeof(bootNits));
++	if (bootNits < 1) {
++		bootNits = 1;
++	}
++	if (bootNits > SWEET_FB_MAX_NITS) {
++		bootNits = SWEET_FB_MAX_NITS;
++	}
++	fBlLevel = (uint32_t)(((uint64_t)bootNits * 0x7ffu) / SWEET_FB_MAX_NITS);
++	if (fBlLevel < 1) {
++		fBlLevel = 1;
++	}
+ 	fBlSent = ~0u;
+ 	fBlCall = thread_call_allocate(&AppleCLCD::blWork, this);
+ 	if (fDsi != NULL) {
+-		IOLog("SWEET FB: DSI0 ctrl %#x, brightness via DCS 0x51\n", *(volatile uint32_t *)(fDsi + 0x004));
+-		setProperty("IOMFBBrightnessLevel", (unsigned long long)(200u << 16), 32);
++		IOLog("SWEET FB: DSI0 ctrl %#x, brightness via DCS 0x51, boot %u nits (level 0x%x)\n", *(volatile uint32_t *)(fDsi + 0x004), bootNits, fBlLevel);
++		setProperty("IOMFBBrightnessLevel", (unsigned long long)(bootNits << 16), 32);
+ 		/*
+ 		 * Off unless sweetbl=1: with a backlight service CoreBrightness also
+ 		 * runs digital dimming, a colour filter over every frame, which the
+@@ -379,7 +396,7 @@ AppleCLCD::start(IOService *provider)
+ 		if (bl != NULL && bl->init()) {
+ 			bl->fFB = this;
+ 			bl->setProperty("backlight-control", true);
+-			bl->setProperty("brightness-nits", (unsigned long long)200, 32);
++			bl->setProperty("brightness-nits", (unsigned long long)bootNits, 32);
+ 			bl->setProperty("max-nits", (unsigned long long)SWEET_FB_MAX_NITS, 32);
+ 			if (bl->attach(this)) {
+ 				bl->registerService();

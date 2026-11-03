@@ -1,0 +1,62 @@
+diff --git a/bsd/dev/sweet_i2c.c b/bsd/dev/sweet_i2c.c
+index e86b762..ab3d60f 100644
+--- a/bsd/dev/sweet_i2c.c
++++ b/bsd/dev/sweet_i2c.c
+@@ -368,25 +368,6 @@ sweet_fifo_bytes(uint32_t v)
+ 	return (out_sz < in_sz) ? out_sz : in_sz;
+ }
+ 
+-/*
+- * Read one QUP window's HW_VERSION. BLSP1 has four QUPs; whyred uses only
+- * QUP1, so QUP2/QUP3 make a free control. A window that answers proves the
+- * NoC path to BLSP1 works and that QUP1 alone is held/reset; a window that
+- * stalls means BLSP1 is not reachable from the APPS at all.
+- */
+-static int
+-sweet_probe_window(uint32_t base, uint32_t *ver)
+-{
+-	volatile uint32_t *w = (volatile uint32_t *)ml_io_map((vm_offset_t)base,
+-	    0x1000);
+-
+-	if (!w) {
+-		return -1;
+-	}
+-	*ver = w[QUP_HW_VERSION / 4];
+-	return 0;
+-}
+-
+ int
+ sweet_i2c_init(void)
+ {
+@@ -427,26 +408,12 @@ sweet_i2c_init(void)
+ 	}
+ 
+ 	/*
+-	 * First access to the SE itself. The line lands before the write and
+-	 * the dwell gives the flusher two ticks, so a ring that stops here
+-	 * means the QUP slave stalled the bus, not the GCC block.
+-	 */
+-	/*
+-	 * Never touch QUP1 before the controls answer: ring 0196 read
+-	 * QUP1+0x30 and the whole SoC died, watchdog included, so a stalled
+-	 * read is not survivable and has to be attributed in one boot.
++	 * Do not probe QUP2/QUP3. Only the QUP1 branch clocks are enabled
++	 * here, and an unclocked QUP slave never answers on the config NoC:
++	 * the read hangs the AXI path and takes the whole SoC with it (ring
++	 * 0196, and again at "probe QUP2/QUP3 windows"). BLSP1 QUP1 is the
++	 * only window this driver needs and the only one that is clocked.
+ 	 */
+-	printf("WHYRED I2C: probe QUP2/QUP3 windows (controls)\n");
+-	delay(1500000);
+-	v = 0;
+-	if (sweet_probe_window(0x0c176000u, &v) == 0) {
+-		printf("WHYRED I2C: QUP2 version 0x%08x\n", v);
+-	}
+-	v = 0;
+-	if (sweet_probe_window(0x0c177000u, &v) == 0) {
+-		printf("WHYRED I2C: QUP3 version 0x%08x\n", v);
+-	}
+-
+ 	printf("WHYRED I2C: QUP mapped, probing the SE\n");
+ 	delay(1500000);
+ 
