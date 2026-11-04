@@ -62,7 +62,7 @@ index 046aea8..13dd8da 100644
  
  	if (!f->found_f12 || !f->f12_data) {
  		printf("WHYRED TOUCH: no F12 data base, cannot poll touch\n");
-@@ -858,19 +897,31 @@ dsx_touch_test(const struct dsx_funcs *f, uint32_t seconds)
+@@ -858,19 +897,33 @@ dsx_touch_test(const struct dsx_funcs *f, uint32_t seconds)
  		if (b[0] == 0x01) {
  			uint16_t x_raw = (uint16_t)((b[2] << 8) | b[1]);
  			uint16_t y_raw = (uint16_t)((b[4] << 8) | b[3]);
@@ -89,6 +89,7 @@ index 046aea8..13dd8da 100644
 +				if (hid_on) {
 +					sweet_hid_touch(0, 1, (int)x_panel, (int)y_panel);
 +				}
++				was_down = 1;
 +			}
  			if (!touched) {
  				touched = 1;
@@ -99,6 +100,7 @@ index 046aea8..13dd8da 100644
 +			if (hid_on) {
 +				sweet_hid_touch(0, 0, 0, 0);
 +			}
++			was_down = 0;
  		}
  		if (!reported && i % 50 == 0) {
  			/* Once a second: prove the poll is alive and show the
