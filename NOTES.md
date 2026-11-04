@@ -4696,3 +4696,19 @@ main blocker, but each one has already cost a cycle once.
    wait. Keep fixes in `tools/touch-cycle.sh`; the scratch copy is disposable.
 7. `sweetouchwait` defaults to 15 s of panel hold on every boot. Fine for the
    diag image, but remember it when timing a cycle by hand.
+
+## Agent handoff / active work (2026-11-04): CI run 41823214987 build failure fixed
+
+- **Scope:** Fix failing GitHub Actions job `build` (`job_id=126552615527`) in workflow run `41823214987`.
+- **Observed from logs (fact):** `xnu/patches/0020-stage-bearssl.sh` failed at
+  `git fetch https://www.bearssl.org/git/BearSSL 7bea48e5e850ab4cafbe68d3765cdaba13a86d6f`
+  with `fatal: ... error: 502`, which stopped the build before `build/xnu.obj` existed.
+- **Code change committed in workspace:**
+  - `xnu/patches/0020-stage-bearssl.sh`
+    - Keep pinned commit verification unchanged.
+    - Add remote fallback order for the same pinned commit:
+      1. `https://www.bearssl.org/git/BearSSL`
+      2. `https://github.com/bearssl/bearssl.git`
+- **Validation run (fact):** `tests/run_tests.sh` passed completely after the change.
+- **Unfinished work:** re-run GitHub Actions workflow `xnu` to confirm the build job passes with the new fallback.
+- **Guesses:** none.
