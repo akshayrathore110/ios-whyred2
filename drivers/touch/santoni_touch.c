@@ -464,6 +464,12 @@ struct dsx_funcs {
 	uint16_t f12_query;
 	uint16_t f12_ctrl;
 	uint16_t f12_data;
+	uint16_t f12_query_page;
+	uint16_t f12_ctrl_page;
+	uint16_t f12_data_page;
+	uint16_t f12_ctrl_28;
+	uint16_t f12_data_off;
+	int f12_data_size;
 	int found_f01;
 	int found_f12;
 	int entries;
@@ -510,6 +516,12 @@ dsx_identify(struct dsx_funcs *f)
 	f->f12_query = 0;
 	f->f12_ctrl = 0;
 	f->f12_data = 0;
+	f->f12_query_page = 0;
+	f->f12_ctrl_page = 0;
+	f->f12_data_page = 0;
+	f->f12_ctrl_28 = 0;
+	f->f12_data_off = 0;
+	f->f12_data_size = 0;
 	f->found_f01 = 0;
 	f->found_f12 = 0;
 	f->entries = 0;
@@ -538,9 +550,12 @@ dsx_identify(struct dsx_funcs *f)
 			f->f01_query = b[0];
 			f->found_f01 = 1;
 		} else if (fn == 0x12 && !f->found_f12) {
-			f->f12_query = b[0];
-			f->f12_ctrl = b[2];
-			f->f12_data = b[3];
+			f->f12_query_page = (uint16_t)(addr >> 8);
+			f->f12_ctrl_page = (uint16_t)(addr >> 8);
+			f->f12_data_page = (uint16_t)(addr >> 8);
+			f->f12_query = (uint16_t)(((addr >> 8) << 8) | b[0]);
+			f->f12_ctrl = (uint16_t)(((addr >> 8) << 8) | b[2]);
+			f->f12_data = (uint16_t)(((addr >> 8) << 8) | b[3]);
 			f->found_f12 = 1;
 		}
 	}
@@ -595,13 +610,86 @@ dsx_identify(struct dsx_funcs *f)
 	}
 
 	if (f->found_f12) {
-		if (dsx_read(DSX_ADDR, f->f12_query, b, 12) == 0) {
-			dsx_dump("f12q", f->f12_query, b, 12);
-			f->num_fingers = (b[1] & 0x07) + 1;
-			f->max_x = (uint16_t)((b[7] << 8) | b[6]);
-			f->max_y = (uint16_t)((b[9] << 8) | b[8]);
+		uint8_t q[20];
+		int qi, present_ctrls = 0, present_datas = 0;
+
+		/* Read F12 query block (20 bytes: query_5 ctrl presence + query_8 data presence).
+		 * Retry with a small delay: bit-bang I2C needs the chip to settle between reads. */
+		for (qi = 0; qi < 3; qi++) {
+			if (dsx_read(DSX_ADDR, f->f12_query, q, sizeof(q)) == 0)
+				break;
+			delay(20000);
+		}
+		if (dsx_read(DSX_ADDR, f->f12_query, q, sizeof(q)) == 0) {
+			dsx_dump("f12q", f->f12_query, q, 12);
+
+			/* Parse query_5: byte at offset 4 = size_of_query6,
+			 * bytes at offsets 5-12 = ctrl0-ctrl63 presence bits. */
+			if (q[4] > 0 && q[4] <= 8) {
+				for (qi = 0; qi < q[4]; qi++) {
+					uint8_t ctrl_present = q[5 + qi];
+					while (ctrl_present) {
+						if (ctrl_present & 1) {
+							if (present_ctrls < 28)
+								present_ctrls++;
+							else
+								break;
+						}
+						ctrl_present >>= 1;
+					}
+					if (present_ctrls >= 28)
+						break;
+				}
+			}
+			f->f12_ctrl_28 = (uint16_t)(f->f12_ctrl + present_ctrls);
+
+			/* Parse query_8: byte at offset 7 = size_of_query8,
+			 * bytes at offsets 8+ = data0-dataN presence bits. */
+			if (q[7] > 0 && q[7] <= 8) {
+				for (qi = 0; qi < q[7]; qi++) {
+					uint8_t data_present = q[8 + qi];
+					while (data_present) {
+						if (data_present & 1) {
+							present_datas++;
+						}
+						data_present >>= 1;
+					}
+				}
+			}
+			f->f12_data_off = (uint16_t)(f->f12_data + present_datas);
+			f->f12_data_size = present_datas;
+
+			/* Parse max_x/max_y from query_8 if ctrl_8 is present. */
+			if (q[5] & 0x01) {	/* ctrl_8 present */
+				f->max_x = (uint16_t)((q[11] << 8) | q[10]);
+				f->max_y = (uint16_t)((q[13] << 8) | q[12]);
+			}
+			f->num_fingers = (q[1] & 0x07) + 1;
+
 			printf("WHYRED TOUCH: dsx f12 fingers %d max_x %u max_y %u\n",
 			    f->num_fingers, f->max_x, f->max_y);
+			printf("WHYRED TOUCH: dsx f12 ctrl_28 0x%04x data_off 0x%04x data_size %d\n",
+			    f->f12_ctrl_28, f->f12_data_off, f->f12_data_size);
+
+			/* Enable F12 reporting: write RPT_DEFAULT (0x01) to ctrl_28. */
+			if (f->f12_ctrl_28 != f->f12_ctrl) {
+				if (dsx_write(DSX_ADDR, f->f12_ctrl_28, 0x01) == 0) {
+					printf("WHYRED TOUCH: F12 reporting enabled (ctrl_28 0x%04x = 0x01)\n",
+					    f->f12_ctrl_28);
+				} else {
+					printf("WHYRED TOUCH: F12 reporting enable FAILED at 0x%04x\n",
+					    f->f12_ctrl_28);
+				}
+			}
+		} else {
+			printf("WHYRED TOUCH: dsx F12 query read failed at 0x%04x\n",
+			    f->f12_query);
+			/* Fall back to PDT data base. */
+			f->f12_data_off = f->f12_data;
+			f->f12_data_size = 8;
+			f->num_fingers = 1;
+			f->max_x = 1079;
+			f->max_y = 2159;
 		}
 		printf("WHYRED TOUCH: dsx f12 ctrl 0x%04x data 0x%04x\n",
 		    f->f12_ctrl, f->f12_data);
@@ -694,16 +782,18 @@ touch_irq_setup(vm_offset_t north)
 static void
 dsx_touch_test(const struct dsx_funcs *f, uint32_t seconds)
 {
-	uint8_t b[8];
+	uint8_t b[16];
 	int i, touched = 0, irq_level, irq_edges = 0;
 	uint16_t max_x = f->max_x ? f->max_x : 1079;
 	uint16_t max_y = f->max_y ? f->max_y : 2159;
 	uint32_t hid_on = 0;
 	static int was_down = 0;
+	uint16_t data_off = f->f12_data_off ? f->f12_data_off : f->f12_data;
+	int data_size = f->f12_data_size ? f->f12_data_size : 8;
 
 	(void)PE_parse_boot_argn("sweethidtouch", &hid_on, sizeof(hid_on));
 
-	if (!f->found_f12 || !f->f12_data) {
+	if (!f->found_f12 || !data_off) {
 		printf("WHYRED TOUCH: no F12 data base, cannot poll touch\n");
 		return;
 	}
@@ -711,19 +801,21 @@ dsx_touch_test(const struct dsx_funcs *f, uint32_t seconds)
 		seconds = 60;	/* keep the boot bounded */
 	}
 
-	/* Enable active reporting: write 0x00 to the F12 control base. */
-	if (dsx_write(DSX_ADDR, f->f12_ctrl, 0x00) == 0) {
-		printf("WHYRED TOUCH: F12 active mode enabled (ctrl 0x%04x = 0)\n",
-		    f->f12_ctrl);
-	} else {
-		printf("WHYRED TOUCH: F12 active-mode write FAILED at 0x%04x\n",
-		    f->f12_ctrl);
+	/* Enable active reporting: write RPT_DEFAULT (0x01) to F12 ctrl_28. */
+	if (f->f12_ctrl_28 && f->f12_ctrl_28 != f->f12_ctrl) {
+		if (dsx_write(DSX_ADDR, f->f12_ctrl_28, 0x01) == 0) {
+			printf("WHYRED TOUCH: F12 reporting enabled (ctrl_28 0x%04x = 0x01)\n",
+			    f->f12_ctrl_28);
+		} else {
+			printf("WHYRED TOUCH: F12 reporting enable FAILED at 0x%04x\n",
+			    f->f12_ctrl_28);
+		}
+		delay(50000);
 	}
-	delay(50000);
 
 	irq_level = touch_irq_ready ? pin_read(&touch_irq) : 1;
 	printf("WHYRED TOUCH: polling F12 data 0x%04x for %u s; irq %d at start; "
-	    "max_x %u max_y %u\n", f->f12_data, seconds, irq_level, max_x,
+	    "max_x %u max_y %u\n", data_off, seconds, irq_level, max_x,
 	    max_y);
 	panel_band(0xff2040e0);		/* blue: waiting for a finger */
 
@@ -744,7 +836,7 @@ dsx_touch_test(const struct dsx_funcs *f, uint32_t seconds)
 				}
 			}
 		}
-		if (dsx_read(DSX_ADDR, f->f12_data, b, sizeof(b)) != 0) {
+		if (dsx_read(DSX_ADDR, data_off, b, data_size > 16 ? 16 : data_size) != 0) {
 			printf("WHYRED TOUCH: F12 data read failed\n");
 			break;
 		}
